@@ -3,7 +3,8 @@ model_a.py
 Owner: Member 1 (Custom Architecture Design - Model A)
 
 Model A (Standard CNN): interleaves standard 2D convolutions with max-pooling,
-per the assignment spec. Designed for 64x64x3 input, 10 output classes (EuroSAT).
+per the assignment spec. Designed for 64x64x3 input, 5 output classes
+(DeFungi: H1, H2, H3, H5, H6 - microscopic fungal infection images, UCI #773).
 
 Architecture summary (documented here so it's easy to paste into the report):
 
@@ -25,14 +26,15 @@ Activation function justification (hardware-aware):
   transciable exponential unit. ReLU also avoids vanishing-gradient issues that
   slow convergence, which matters when you have a limited training/compute budget.
 
-Trainable parameter count (verified by count_parameters() below):
+Trainable parameter count (verified by count_parameters() below; independent
+of num_classes=10 vs 5 except in the final FC2 layer):
   Conv1: (3*3*3 + 1) * 16   = 448
   Conv2: (3*3*16 + 1) * 32  = 4,640
   Conv3: (3*3*32 + 1) * 64  = 18,496
   FC1:   (4096 + 1) * 128   = 524,416
-  FC2:   (128 + 1) * 10     = 1,290
+  FC2:   (128 + 1) * 5      = 645       (5 classes for DeFungi)
   ---------------------------------
-  Total                     = 549,290 params
+  Total                     = 548,645 params
 """
 
 import torch
@@ -40,7 +42,7 @@ import torch.nn as nn
 
 
 class ModelA(nn.Module):
-    def __init__(self, num_classes=10, in_channels=3):
+    def __init__(self, num_classes=5, in_channels=3):
         super().__init__()
 
         self.features = nn.Sequential(
@@ -77,10 +79,10 @@ def count_parameters(model):
 
 if __name__ == "__main__":
     # Quick sanity check you can run standalone: python model_a.py
-    model = ModelA(num_classes=10)
+    model = ModelA(num_classes=5)
     dummy_input = torch.randn(1, 3, 64, 64)
     output = model(dummy_input)
 
     print(model)
-    print(f"\nOutput shape: {output.shape}  (expect [1, 10])")
+    print(f"\nOutput shape: {output.shape}  (expect [1, 5])")
     print(f"Total trainable parameters: {count_parameters(model):,}")

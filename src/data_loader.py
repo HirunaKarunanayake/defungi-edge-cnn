@@ -2,14 +2,34 @@
 data_loader.py
 Owner: Member 1 (Data Preparation)
 
-Downloads the EuroSAT dataset (64x64 RGB land-use/land-cover scenes, 10 classes),
-splits it 70/15/15 into train/val/test, and exposes ready-to-use DataLoaders.
+Downloads the DeFungi dataset (UCI ML Repository, dataset #773) - microscopic
+fungal infection images across 5 classes - resizes to 64x64, splits it
+70/15/15 into train/val/test, and exposes ready-to-use DataLoaders.
+
+Source: https://archive.ics.uci.edu/dataset/773/defungi
+Reference: Sopo, Hajati & Gheisari (2021), "DeFungi: Direct mycological
+examination of microscopic fungi images", Medical Mycology.
+
+Classes (folder names -> organism):
+  H1 -> Candida albicans        (4,404 images)
+  H2 -> Aspergillus niger       (2,334 images)
+  H3 -> Trichophyton rubrum     (  819 images)
+  H5 -> Trichophyton mentagrophytes (818 images)
+  H6 -> Epidermophyton floccosum (  739 images)
+
+NOTE: classes are imbalanced (H1 is ~6x larger than H5/H6). Plain accuracy
+alone is misleading here - use the class weights below in your loss function,
+and always report precision/recall/confusion matrix, not just accuracy.
 
 Everyone else on the team should import get_dataloaders() rather than writing
 their own data code, so all models train/validate/test on identical splits.
 """
 
 import os
+import io
+import zipfile
+import urllib.request
+
 import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
@@ -17,21 +37,25 @@ from torchvision import datasets, transforms
 # ----------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------
-DATA_ROOT = "./data"          # where EuroSAT will be downloaded/extracted
-IMAGE_SIZE = 64                # EuroSAT is natively 64x64, kept here for clarity/safety
+DATA_URL = "https://cdn.uci-ics-mlr-prod.aws.uci.edu/773/defungi.zip"
+DATA_ROOT = "./data"                       # where DeFungi will be downloaded/extracted
+RAW_DIR = os.path.join(DATA_ROOT, "defungi_raw")
+IMAGE_SIZE = 64                             # per assignment: downscale to max 64x64
 BATCH_SIZE = 32
-SEED = 42                      # fixed seed so every team member gets the SAME split
+SEED = 42                                   # fixed seed so every team member gets the SAME split
 TRAIN_FRAC, VAL_FRAC, TEST_FRAC = 0.70, 0.15, 0.15
 
-# Standard ImageNet-style normalization works fine here and also matches what
-# the pretrained SOTA models (Member 4's step) expect, so we reuse the same
-# transform everywhere for consistency.
+# Standard ImageNet-style normalization also matches what the pretrained SOTA
+# models (Member 4's step) expect, so we reuse the same transform everywhere.
 NORM_MEAN = [0.485, 0.456, 0.406]
 NORM_STD = [0.229, 0.224, 0.225]
 
+CLASS_NAMES = ["H1", "H2", "H3", "H5", "H6"]
+CLASS_COUNTS = {"H1": 4404, "H2": 2334, "H3": 819, "H5": 818, "H6": 739}
+
 
 def get_transforms():
-    """Basic transform: resize (safety no-op at 64x64) + tensor + normalize."""
+    """Resize raw (larger, variable-size) images down to 64x64 + tensor + normalize."""
     return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
@@ -39,14 +63,52 @@ def get_transforms():
     ])
 
 
-def get_datasets():
-    """Downloads EuroSAT (if not already present) and returns train/val/test Subsets."""
+def download_and_extract():
+    """Downloads the DeFungi zip from UCI and extracts it, if not already present."""
     os.makedirs(DATA_ROOT, exist_ok=True)
 
-    full_dataset = datasets.EuroSAT(
-        root=DATA_ROOT,
-        download=True,
-        transform=get_transforms(),
+    # Already extracted? skip.
+    if os.path.isdir(RAW_DIR) and any(
+        os.path.isdir(os.path.join(RAW_DIR, c)) for c in CLASS_NAMES
+    ):
+        return
+
+    print(f"Downloading DeFungi (~149 MB) from {DATA_URL} ...")
+    with urllib.request.urlopen(DATA_URL) as response:
+        zip_bytes = response.read()
+
+    print("Extracting ...")
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        zf.extractall(RAW_DIR)
+
+    # The zip may extract into a nested folder (e.g. defungi/H1/...); if so,
+    # flatten it so RAW_DIR directly contains H1/, H2/, etc.
+    if not any(os.path.isdir(os.path.join(RAW_DIR, c)) for c in CLASS_NAMES):
+        subdirs = [d for d in os.listdir(RAW_DIR)
+                   if os.path.isdir(os.path.join(RAW_DIR, d))]
+        for sub in subdirs:
+            nested = os.path.join(RAW_DIR, sub)
+            if any(os.path.isdir(os.path.join(nested, c)) for c in CLASS_NAMES):
+                for c in os.listdir(nested):
+                    os.rename(os.path.join(nested, c), os.path.join(RAW_DIR, c))
+                break
+
+
+def get_class_weights():
+    """Inverse-frequency class weights, useful for a weighted loss (imbalanced classes)."""
+    total = sum(CLASS_COUNTS.values())
+    weights = [total / (len(CLASS_NAMES) * CLASS_COUNTS[c]) for c in CLASS_NAMES]
+    return torch.tensor(weights, dtype=torch.float32)
+
+
+def get_datasets():
+    """Downloads DeFungi (if not already present) and returns train/val/test Subsets."""
+    download_and_extract()
+
+    full_dataset = datasets.ImageFolder(root=RAW_DIR, transform=get_transforms())
+    # Sanity check: ImageFolder sorts classes alphabetically -> should match CLASS_NAMES
+    assert full_dataset.classes == CLASS_NAMES, (
+        f"Unexpected class folders: {full_dataset.classes}, expected {CLASS_NAMES}"
     )
 
     n_total = len(full_dataset)
@@ -83,6 +145,7 @@ if __name__ == "__main__":
     print(f"Classes ({len(class_names)}): {class_names}")
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)} "
           f"| Test batches: {len(test_loader)}")
+    print(f"Class weights (for imbalanced loss, if needed): {get_class_weights().tolist()}")
 
     images, labels = next(iter(train_loader))
     print(f"Batch shape: {images.shape}  (expect [B, 3, {IMAGE_SIZE}, {IMAGE_SIZE}])")
